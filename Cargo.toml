@@ -1,0 +1,14 @@
+[package]
+name = "nrf_accelhid"
+version = "0.1.0"
+authors = ["Erik Tollerud <erik.tollerud@gmail.com>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+cortex-m = "0.7.7"
+cortex-m-rt = "0.7.3"
+nrf52840-hal = "0.16.0"
+panic-persist = "0.3.0"
+panic-halt = "0.2.0"
