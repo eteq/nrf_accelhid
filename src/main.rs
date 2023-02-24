@@ -30,29 +30,45 @@ fn main() -> ! {
 
     let mut redled: P0_06<gpio::Output<PushPull>> = port0.p0_06.into_push_pull_output(Level::High);
 
-    let dotstar_clk = port1.p1_09.into_push_pull_output(Level::Low).degrade();
-    let dotstar_mosi = port0.p0_08.into_push_pull_output(Level::Low).degrade();
-    let dotstar_miso = port1.p1_08.into_floating_input().degrade();  // not actually needed
+    let mut dotstar_clk = port1.p1_09.into_push_pull_output(Level::Low).degrade();
+    let mut dotstar_dat = port0.p0_08.into_push_pull_output(Level::Low).degrade();
 
-
-    let pins = hal::spim::Pins {
-        sck: Some(dotstar_clk),
-        miso: Some(dotstar_miso),
-        mosi: Some(dotstar_mosi),
-    };
-    let mut dotstar_spi = hal::spim::Spim::new(
-        peripherals.SPIM2,
-        pins,
-        hal::spim::Frequency::K500,
-        hal::spim::MODE_0,
-        0,
-    );
+    set_dotstar_color(0, 0, 100u8, 255u8,
+                      &mut dotstar_dat, &mut dotstar_clk);
 
     loop {
-        redled.set_high();
-        delay.delay_ms(100);
-        redled.set_low();
-        delay.delay_ms(100);
+        redled.set_high().expect("led set failed");
+        delay.delay_ms(100u16);
+        redled.set_low().expect("led set failed");
+        delay.delay_ms(100u16);
     }
 }
 
+fn set_dotstar_color(rbyte:u8, gbyte:u8, bbyte:u8, brightness:u8, 
+    dat: &mut Pin<Output<PushPull>>, clk: &mut Pin<Output<PushPull>>) {
+    let firstbyte = brightness | 0b11100000;  // anything > 31 is effectively treated as max
+    
+    let txbuffer = [0, 0, 0, 0,
+                    firstbyte, bbyte, gbyte, rbyte,
+                    0xff, 0xff, 0xff, 0xff
+                    ];
+
+    clk.set_high().ok();
+    cortex_m::asm::delay(200_u32);
+
+
+    for b in txbuffer.iter() {
+        for i in 0..8 {
+            clk.set_low().ok();
+            if 0b10000000 & (b << i) == 0 { 
+                dat.set_low().ok();
+            } else {
+                dat.set_high().ok();
+            }
+            cortex_m::asm::delay(3_u32);
+            clk.set_high().ok();
+            cortex_m::asm::delay(3_u32);
+        }
+    }
+    clk.set_low().ok();
+}
