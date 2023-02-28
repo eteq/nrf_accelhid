@@ -11,8 +11,10 @@ rm target/toflash.bin
 # get the chip in reset mode
 gpioset -m time -u 5000 $GPIONUM 0=0 1=0 2=0 3=0
 gpioset -m time -u 5000 $GPIONUM 0=1 1=1 2=1 3=1
+if ! [ -z ${SINGLERESET+x} ]; then
 gpioset -m time -u 5000 $GPIONUM 0=0 1=0 2=0 3=0
 gpioset -m time -u 5000 $GPIONUM 0=1 1=1 2=1 3=1
+fi
 
 echo wait for USB to catch up
 sleep 4 
