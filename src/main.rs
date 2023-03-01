@@ -4,41 +4,22 @@
 
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
+//use embassy_time::{Duration, Timer};
 
 use embassy_nrf;
 use embassy_nrf::gpio::*;
-use embassy_nrf::peripherals::*;
-use embassy_nrf::{interrupt, uarte};
+use embassy_nrf::{interrupt, uarte, config};
 
 
 
 use defmt_rtt as _; // global logger
 use panic_persist;
 
-#[embassy_executor::task]
-async fn dotstar_toggler(mut dat: Output<'static, AnyPin>, mut clk: Output<'static, AnyPin>, interval: Duration) {
-    loop {
-        set_dotstar_color(0, 255u8, 0, 10u8, &mut dat, &mut clk);
-        Timer::after(interval).await;
-        set_dotstar_color(0, 0, 255u8, 10u8, &mut dat, &mut clk);
-        Timer::after(interval).await;
-    }
-}
-
-#[embassy_executor::task]
-async fn blinker(mut redled: Output<'static, P0_06>, interval: Duration) {
-    loop {
-        redled.set_high();
-        Timer::after(interval).await;
-        redled.set_low();
-        Timer::after(interval).await;
-    }
-}
-
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    let p = embassy_nrf::init(Default::default());
+    let mut init_config = config::Config::default();
+    init_config.lfclk_source = config::LfclkSource::ExternalXtal;
+    let p = embassy_nrf::init(init_config);
 
     let mut uart_config = uarte::Config::default();
     uart_config.parity = uarte::Parity::EXCLUDED;
@@ -55,13 +36,14 @@ async fn main(spawner: Spawner) {
     }
 
 
-    let dotstar_dat = Output::new(p.P0_08.degrade(), Level::Low, OutputDrive::Standard);
-    let dotstar_clk = Output::new(p.P1_09.degrade(), Level::Low, OutputDrive::Standard);
-    unwrap!(spawner.spawn(dotstar_toggler(dotstar_dat, dotstar_clk, Duration::from_millis(300))));
+    let mut dotstar_dat = Output::new(p.P0_08.degrade(), Level::Low, OutputDrive::Standard);
+    let mut dotstar_clk = Output::new(p.P1_09.degrade(), Level::Low, OutputDrive::Standard);
+    set_dotstar_color(0, 0, 0, 0, &mut dotstar_dat, &mut dotstar_clk);
+    let mut redled = Output::new(p.P0_06, Level::High, OutputDrive::Standard);
 
+    // action
 
-    let redled = Output::new(p.P0_06, Level::Low, OutputDrive::Standard);
-    unwrap!(spawner.spawn(blinker(redled, Duration::from_millis(300))));
+    redled.set_low();
     
 }
 
