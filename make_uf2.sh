@@ -9,11 +9,11 @@ uf2conv target/toflash.bin --base 0x26000 --family 0xADA52840 --output target/to
 rm target/toflash.bin
 
 # get the chip in reset mode
-gpioset -m time -u 5000 $GPIONUM 0=0 1=0 2=0 3=0
-gpioset -m time -u 5000 $GPIONUM 0=1 1=1 2=1 3=1
-if ! [ -z ${SINGLERESET+x} ]; then
-gpioset -m time -u 5000 $GPIONUM 0=0 1=0 2=0 3=0
-gpioset -m time -u 5000 $GPIONUM 0=1 1=1 2=1 3=1
+gpioset -m time -u 1000 $GPIONUM 0=0 1=0 2=0 3=0
+gpioset -m time -u 1000 $GPIONUM 0=1 1=1 2=1 3=1
+if [ x"${SINGLERESET}" == "x" ]; then
+	gpioset -m time -u 1000 $GPIONUM 0=0 1=0 2=0 3=0
+	gpioset -m time -u 1000 $GPIONUM 0=1 1=1 2=1 3=1
 fi
 
 echo wait for USB to catch up
