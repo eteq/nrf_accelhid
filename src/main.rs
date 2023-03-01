@@ -68,53 +68,22 @@ async fn main(_spawner: Spawner) {
     }
 
 
-    let mut numbuf = [0; 20];
     let mut buf = AlignedBuf([0u8; FLASH_PAGE_SIZE]);
+    buf.0[1] = 12;
+    buf.0[2] = 13;
+    buf.0[3] = 14;
 
-    let pattern = |a: u32| (a ^ (a >> 8) ^ (a >> 16) ^ (a >> 24)) as u8;
+    qspi.blocking_erase(0);
+    qspi.blocking_write(0, &buf.0);
 
-    for i in 0..8 {
-        uart.blocking_write(b"page erasing... ");
-        uart.blocking_write(i.numtoa(10, &mut numbuf));
-        uart.blocking_write(b"\r\n");
-        qspi.erase(i * FLASH_PAGE_SIZE).await.unwrap();
+    let mut rbuf = [1 ; 4];
+    qspi.blocking_read(0, &mut rbuf).unwrap();
 
-        for j in 0..FLASH_PAGE_SIZE {
-            buf.0[j] = pattern((j + i * FLASH_PAGE_SIZE) as u32);
-        }
-
-        uart.blocking_write(b"programming...\r\n");
-        qspi.write(i * FLASH_PAGE_SIZE, &buf.0).await.unwrap();
+    let mut numbuf = [0; 20];
+    for i in 0..4 {
+        uart.blocking_write(rbuf[i].numtoa(16, &mut numbuf)).unwrap();
     }
-
-    for i in 0..8 {
-        uart.blocking_write(b"page  reading...");
-        uart.blocking_write(i.numtoa(10, &mut numbuf));
-        uart.blocking_write(b"\r\n");
-        qspi.read(i * FLASH_PAGE_SIZE, &mut buf.0).await.unwrap();
-
-        uart.blocking_write(b"verifying...\r\n");
-        for j in 0..FLASH_PAGE_SIZE {
-            assert_eq!(buf.0[j], pattern((j + i * FLASH_PAGE_SIZE) as u32));
-        }
-    }
-
-  
-
-
-    // qspi.blocking_erase(0).unwrap();
-
-    // let mut buf = AlignedBuf([0u8; FLASH_PAGE_SIZE]);
-    // buf.0[0] = 1;
-    // buf.0[1] = 2;
-    // qspi.blocking_write(0, &buf.0).unwrap();
-    // qspi.blocking_read(0, &mut buf.0).unwrap();
-
-    // let mut numbuf = [0; 20];
-    // for i in 0..3 {
-    //     uart.blocking_write(buf.0[i].numtoa(16, &mut numbuf)).unwrap();
-    // }
-
+    uart.blocking_write(b"\r\n").unwrap();
 
     redled.set_low();
     
