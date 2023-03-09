@@ -19,10 +19,10 @@ use numtoa::NumToA;
 
 use panic_persist;
 
-const FLASH_PAGE_SIZE: usize = 4096;
+const FLASH_PAGE_SIZE: usize = 256;
 // Workaround for alignment requirements in flash writing
 #[repr(C, align(4))]
-struct AlignedBuf([u8; FLASH_PAGE_SIZE]);
+struct AlignedPageBuf([u8; FLASH_PAGE_SIZE]);
 
 
 static BUTTON_SIGNAL: Signal<CriticalSectionRawMutex, u32> = Signal::new();
@@ -85,7 +85,7 @@ async fn main(spawner: Spawner) {
     }
 
     // example for writing code
-    // let mut buf = AlignedBuf([0u8; FLASH_PAGE_SIZE]);
+    // let mut buf = AlignedPageBuf([0u8; FLASH_PAGE_SIZE]);
     // qspi.blocking_erase(0);
     // qspi.blocking_write(0, &buf.0);
     // let mut rbuf = [1 ; 4];
@@ -111,7 +111,20 @@ async fn main(spawner: Spawner) {
 
         if DUMP_SIGNAL.signaled() {
             set_dotstar_color(255, 200, 0, 5, &mut dotstar_dat, &mut dotstar_clk); 
-            tx_uart.blocking_write(b"This should be the dump!!\r\n").unwrap();
+
+            let mut numtoa_buffer = [0u8; 40];
+            let mut flash_data = [0u8; 4];
+
+            qspi.blocking_read(0, &mut flash_data).unwrap();
+            let ndata = usize::from_ne_bytes(flash_data);
+
+            for i in 0..ndata {
+                qspi.read(FLASH_PAGE_SIZE + i*4, &mut flash_data).await.unwrap();
+                let towrite_bytes = u32::from_ne_bytes(flash_data).numtoa(10, &mut numtoa_buffer);
+                tx_uart.blocking_write(towrite_bytes).unwrap();
+                tx_uart.blocking_write(b"\r\n").unwrap();
+            }
+
             DUMP_SIGNAL.reset();
         }
         if BUTTON_SIGNAL.signaled() {
@@ -121,7 +134,6 @@ async fn main(spawner: Spawner) {
 
             qspi.blocking_custom_instruction(0x05, &emptybuf, &mut status).unwrap();  //reads the fist status register - bit 0 is WIP
             while status[0] & 1 == 1 {  // if WIP, keep reading until its not
-                panic!("wip set!");
                 qspi.blocking_custom_instruction(0x05, &emptybuf, &mut status).unwrap();
             }
             
@@ -139,22 +151,16 @@ async fn main(spawner: Spawner) {
             
             set_dotstar_color(255, 0, 255, 5, &mut dotstar_dat, &mut dotstar_clk); 
             // erase finished, set up recording
+            // TODO
 
-            let mut numtoa_buf = [0; 20];
-            let mut rbuf = [1 ; 4];
-            qspi.blocking_read(0, &mut rbuf).unwrap();
-            tx_uart.blocking_write(b"rbuf1:").unwrap();
-            tx_uart.blocking_write(rbuf[0].numtoa(10, &mut numtoa_buf)).unwrap();
-            tx_uart.blocking_write(b"\r\n").unwrap();
+            // start recording
+            // TODO
 
-            let mut wbuf = AlignedBuf([2u8; FLASH_PAGE_SIZE]);
-            qspi.blocking_write(0, &wbuf.0);
-            qspi.blocking_read(0, &mut rbuf).unwrap();
-            tx_uart.blocking_write(b"rbuf2:").unwrap();
-            tx_uart.blocking_write(rbuf[0].numtoa(10, &mut numtoa_buf)).unwrap();
-            tx_uart.blocking_write(b"\r\n").unwrap();
+            // record length
+            let lenbuf: [u8; 4] = 234_u32.to_ne_bytes();  // note this is a count of *bytes* not bits
+            qspi.blocking_write(0, &lenbuf).unwrap(); // first page is always dedicated to just the length
 
-            
+            set_dotstar_color(0, 0, 255, 5, &mut dotstar_dat, &mut dotstar_clk); 
 
             BUTTON_SIGNAL.reset(); // serves to ignore any presses during the operation
         }
