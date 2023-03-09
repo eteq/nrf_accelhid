@@ -2,12 +2,18 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 
+#![allow(unused_imports)]
+#![allow(dead_code)]
+
 use embassy_executor::Spawner;
-//use embassy_time::{Duration, Timer};
+use embassy_time::{Timer, Instant, Duration};
+
+use embassy_sync::signal::Signal;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 
 use embassy_nrf;
 use embassy_nrf::gpio::*;
-use embassy_nrf::{interrupt, uarte, config, qspi};
+use embassy_nrf::{interrupt, uarte, config, qspi, peripherals};
 
 use numtoa::NumToA;
 
@@ -18,11 +24,17 @@ const FLASH_PAGE_SIZE: usize = 4096;
 #[repr(C, align(4))]
 struct AlignedBuf([u8; FLASH_PAGE_SIZE]);
 
+
+static DUMP_SIGNAL: Signal<CriticalSectionRawMutex, u32> = Signal::new();
+
+
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
     let mut init_config = config::Config::default();
     init_config.lfclk_source = config::LfclkSource::ExternalXtal;
     let p = embassy_nrf::init(init_config);
+
+    let mut redled = Output::new(p.P0_06, Level::High, OutputDrive::Standard);
 
     let mut uart_config = uarte::Config::default();
     uart_config.parity = uarte::Parity::EXCLUDED;
@@ -37,14 +49,11 @@ async fn main(_spawner: Spawner) {
     } else {
         uart.write(b"No panic error message on boot.\r\n").await.unwrap();
     }
-
+    let (mut tx_uart, rx_uart) = uart.split();
 
     let mut dotstar_dat = Output::new(p.P0_08.degrade(), Level::Low, OutputDrive::Standard);
     let mut dotstar_clk = Output::new(p.P1_09.degrade(), Level::Low, OutputDrive::Standard);
     set_dotstar_color(0, 0, 0, 0, &mut dotstar_dat, &mut dotstar_clk);
-    let mut redled = Output::new(p.P0_06, Level::High, OutputDrive::Standard);
-
-    // action
 
     let mut config = qspi::Config::default();
     config.read_opcode = qspi::ReadOpcode::READ4O;
@@ -67,26 +76,49 @@ async fn main(_spawner: Spawner) {
         panic!("Flash ID is incorrect!");
     }
 
+    // example for writing code
+    // let mut buf = AlignedBuf([0u8; FLASH_PAGE_SIZE]);
+    // qspi.blocking_erase(0);
+    // qspi.blocking_write(0, &buf.0);
+    // let mut rbuf = [1 ; 4];
+    // qspi.blocking_read(0, &mut rbuf).unwrap();
 
-    let mut buf = AlignedBuf([0u8; FLASH_PAGE_SIZE]);
-    buf.0[1] = 12;
-    buf.0[2] = 13;
-    buf.0[3] = 14;
+    // Goal interface: 
+    // * dotstar starts off, redled on until init finishes
+    // * dotstar green while waiting for input
+    // * press button: erase (dotar red), record data (dotstar blue), next button press signals stop recording (dotstar back to green)
+    // * UART receives "d" : ignore if recording, otherwise dump flash (dotstar yellow)
 
-    qspi.blocking_erase(0);
-    qspi.blocking_write(0, &buf.0);
+    DUMP_SIGNAL.reset();
 
-    let mut rbuf = [1 ; 4];
-    qspi.blocking_read(0, &mut rbuf).unwrap();
+    spawner.spawn(read_dump(rx_uart)).unwrap();
 
-    let mut numbuf = [0; 20];
-    for i in 0..4 {
-        uart.blocking_write(rbuf[i].numtoa(16, &mut numbuf)).unwrap();
-    }
-    uart.blocking_write(b"\r\n").unwrap();
 
     redled.set_low();
+
+    loop {
+        set_dotstar_color(0, 255, 0, 5, &mut dotstar_dat, &mut dotstar_clk); //green -> waiting for input
+
+        if DUMP_SIGNAL.signaled() {
+            set_dotstar_color(255, 200, 0, 5, &mut dotstar_dat, &mut dotstar_clk); 
+            tx_uart.blocking_write(b"This should be the dump!!\r\n").unwrap();
+            DUMP_SIGNAL.reset();
+        }
+        Timer::at(Instant::from_ticks(0)).await;
+    }
     
+}
+
+#[embassy_executor::task]
+async fn read_dump(mut rx: uarte::UarteRx<'static, peripherals::UARTE0>) {
+    let mut buf = [0; 1];
+    loop {
+        rx.read(&mut buf).await.unwrap();
+        if buf[0] == b'd' {
+            //dump received, signal.
+            DUMP_SIGNAL.signal(1);
+        }
+    }
 }
 
 fn set_dotstar_color(rbyte:u8, gbyte:u8, bbyte:u8, brightness:u8, 
