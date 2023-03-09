@@ -25,6 +25,7 @@ const FLASH_PAGE_SIZE: usize = 4096;
 struct AlignedBuf([u8; FLASH_PAGE_SIZE]);
 
 
+static BUTTON_SIGNAL: Signal<CriticalSectionRawMutex, u32> = Signal::new();
 static DUMP_SIGNAL: Signal<CriticalSectionRawMutex, u32> = Signal::new();
 
 
@@ -32,9 +33,16 @@ static DUMP_SIGNAL: Signal<CriticalSectionRawMutex, u32> = Signal::new();
 async fn main(spawner: Spawner) {
     let mut init_config = config::Config::default();
     init_config.lfclk_source = config::LfclkSource::ExternalXtal;
+    init_config.hfclk_source = config::HfclkSource::Internal;
+    // don't collide with softdevice
+    init_config.gpiote_interrupt_priority = embassy_nrf::interrupt::Priority::P2;
+    init_config.time_interrupt_priority = embassy_nrf::interrupt::Priority::P3;
     let p = embassy_nrf::init(init_config);
 
     let mut redled = Output::new(p.P0_06, Level::High, OutputDrive::Standard);
+
+
+    Timer::after(Duration::from_millis(100)).await;
 
     let mut uart_config = uarte::Config::default();
     uart_config.parity = uarte::Parity::EXCLUDED;
@@ -89,10 +97,12 @@ async fn main(spawner: Spawner) {
     // * press button: erase (dotar red), record data (dotstar blue), next button press signals stop recording (dotstar back to green)
     // * UART receives "d" : ignore if recording, otherwise dump flash (dotstar yellow)
 
+    let button = Input::new(p.P0_29.degrade(), Pull::Up);
+    BUTTON_SIGNAL.reset();
+    spawner.spawn(button_task(button)).unwrap();
+
     DUMP_SIGNAL.reset();
-
     spawner.spawn(read_dump(rx_uart)).unwrap();
-
 
     redled.set_low();
 
@@ -104,9 +114,67 @@ async fn main(spawner: Spawner) {
             tx_uart.blocking_write(b"This should be the dump!!\r\n").unwrap();
             DUMP_SIGNAL.reset();
         }
+        if BUTTON_SIGNAL.signaled() {
+            let emptybuf = [0u8 ;0];
+            let mut emptymbuf = [0u8 ;0];
+            let mut status = [0u8 ;1];
+
+            qspi.blocking_custom_instruction(0x05, &emptybuf, &mut status).unwrap();  //reads the fist status register - bit 0 is WIP
+            while status[0] & 1 == 1 {  // if WIP, keep reading until its not
+                panic!("wip set!");
+                qspi.blocking_custom_instruction(0x05, &emptybuf, &mut status).unwrap();
+            }
+            
+
+            tx_uart.blocking_write(b"Erasing flash\r\n").unwrap();
+            set_dotstar_color(255, 0, 0, 5, &mut dotstar_dat, &mut dotstar_clk); 
+            qspi.blocking_custom_instruction(0x60, &emptybuf, &mut emptymbuf).unwrap();  //chip erase - WEN is set automatically by blocking_custom_instruction
+            
+            // wait for chip erase to finish...
+            qspi.blocking_custom_instruction(0x05, &emptybuf, &mut status).unwrap();  //reads the fist status register - bit 0 is WIP
+            while status[0] & 1 == 1 {
+                qspi.blocking_custom_instruction(0x05, &emptybuf, &mut status).unwrap();
+            }
+            tx_uart.blocking_write(b"Flash erased!\r\n").unwrap();
+            
+            set_dotstar_color(255, 0, 255, 5, &mut dotstar_dat, &mut dotstar_clk); 
+            // erase finished, set up recording
+
+            let mut numtoa_buf = [0; 20];
+            let mut rbuf = [1 ; 4];
+            qspi.blocking_read(0, &mut rbuf).unwrap();
+            tx_uart.blocking_write(b"rbuf1:").unwrap();
+            tx_uart.blocking_write(rbuf[0].numtoa(10, &mut numtoa_buf)).unwrap();
+            tx_uart.blocking_write(b"\r\n").unwrap();
+
+            let mut wbuf = AlignedBuf([2u8; FLASH_PAGE_SIZE]);
+            qspi.blocking_write(0, &wbuf.0);
+            qspi.blocking_read(0, &mut rbuf).unwrap();
+            tx_uart.blocking_write(b"rbuf2:").unwrap();
+            tx_uart.blocking_write(rbuf[0].numtoa(10, &mut numtoa_buf)).unwrap();
+            tx_uart.blocking_write(b"\r\n").unwrap();
+
+            
+
+            BUTTON_SIGNAL.reset(); // serves to ignore any presses during the operation
+        }
         Timer::at(Instant::from_ticks(0)).await;
     }
     
+}
+
+
+#[embassy_executor::task]
+async fn button_task(mut pin: Input<'static, AnyPin>) {
+    loop {
+        pin.wait_for_low().await;
+        Timer::after(Duration::from_millis(5)).await;  // debounce period
+        pin.wait_for_high().await;
+
+        BUTTON_SIGNAL.signal(1);
+
+        Timer::after(Duration::from_millis(5)).await;  // debounce period
+    }
 }
 
 #[embassy_executor::task]
@@ -115,7 +183,6 @@ async fn read_dump(mut rx: uarte::UarteRx<'static, peripherals::UARTE0>) {
     loop {
         rx.read(&mut buf).await.unwrap();
         if buf[0] == b'd' {
-            //dump received, signal.
             DUMP_SIGNAL.signal(1);
         }
     }
