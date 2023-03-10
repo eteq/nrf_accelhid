@@ -10,6 +10,7 @@ pub(crate) const MPU6050_REGADDR_BANK_SEL       : u8 = 0x6D;
 pub(crate) const MPU6050_REGADDR_MEM_START_ADDR : u8 = 0x6E;
 pub(crate) const MPU6050_REGADDR_MEM_R_W        : u8 = 0x6F;
 pub(crate) const MPU6050_REGADDR_DMP_PROG_START : u8 = 0x70;
+pub(crate) const MPU6050_REGADDR_DMP_CFG        : u8 = 0x71;
 
 pub(crate) const DMP_PACKET_SIZE: usize = 28;
 
