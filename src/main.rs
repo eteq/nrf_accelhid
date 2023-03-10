@@ -268,6 +268,9 @@ fn mpu6050_setup<T: twim::Instance>(twim: &mut twim::Twim<T>, address: u8) {
 }
 
 fn mpu6050_write_firmware<T: twim::Instance>(twim: &mut twim::Twim<T>, address: u8, verify: bool) {
+    // Logic currently wrong!  Need to manually update the bank it turns out
+
+
     // set the bank to 0
     twim.blocking_write(address, &[dmp_firmware::MPU6050_REGADDR_BANK_SEL, 0]).unwrap();
     // and the start address

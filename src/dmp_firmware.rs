@@ -2,7 +2,6 @@
    which appears to be adapted from https://github.com/jrowberg/i2cdevlib/blob/master/RP2040/MPU6050/MPU6050_6Axis_MotionApps_V6_12.h (also MIT License)
 */
 
-pub(crate) const MPU6050_DMP_MEMORY_BANKS: usize = 8;
 pub(crate) const MPU6050_DMP_MEMORY_BANK_SIZE: usize = 256;
 pub(crate) const MPU6050_DMP_MEMORY_CHUNK_SIZE: usize = 16;
 
@@ -14,7 +13,7 @@ pub(crate) const MPU6050_REGADDR_DMP_CFG        : u8 = 0x71;
 
 pub(crate) const DMP_PACKET_SIZE: usize = 28;
 
-// These are not documented in the register pdf so we record them here
+// The above information is not documented in the register pdf so we record them here
 
 pub(crate) const DMP_FIRMWARE: [u8; 3062] = [
 /* bank # 0 */
