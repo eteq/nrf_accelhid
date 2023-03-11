@@ -102,7 +102,7 @@ async fn main(spawner: Spawner) {
     tx_uart.blocking_write(b"Starting loop on 0x68:\r\n").unwrap();
     loop {
         let mut numtoa_scratch = [0; 30];
-        let fifo = mpu6050_read_latest(&mut twim0, 0x68);
+        let fifo = mpu6050_read_latest(&mut twim0, 0x68).await;
         tx_uart.blocking_write(b"FIFO contents:").unwrap();
         for i in 0..fifo.len() {
             tx_uart.blocking_write(fifo[i].numtoa(10, &mut numtoa_scratch)).unwrap();
@@ -347,10 +347,10 @@ fn mpu6050_reset_fifo<T: twim::Instance>(twim: &mut twim::Twim<T>, address: u8) 
     twim.blocking_write(address, &[106, reg_buffer[0] | 0b00000100]).unwrap();  // write back the same thing but with the fifo reset bit set
 }
 
-fn mpu6050_get_fifo_count<T: twim::Instance>(twim: &mut twim::Twim<T>, address: u8) -> u16 {
+async fn mpu6050_get_fifo_count<T: twim::Instance>(twim: &mut twim::Twim<'_, T>, address: u8) -> u16 {
     let mut rd_buffer = [0; 2];
     // first read the USER_CTRL register
-    twim.blocking_write_read(address, &[114], &mut rd_buffer).unwrap();
+    twim.write_read(address, &[114], &mut rd_buffer).await.unwrap();
     ((rd_buffer[0] as u16) << 8) | (rd_buffer[1] as u16)
 }
 
@@ -362,10 +362,13 @@ fn mpu6050_test_panic<T: twim::Instance>(twim: &mut twim::Twim<T>, address: u8, 
     }
 
     mpu6050_reset_fifo(twim, address);
-    let mut count = mpu6050_get_fifo_count(twim, address);
+    let mut count = 0;
     let mut nzeros: usize = 0;
     while count == 0 {
-        count = mpu6050_get_fifo_count(twim, address);
+        let mut rd_buffer = [0; 2];
+        // first read the USER_CTRL register
+        twim.blocking_write_read(address, &[114], &mut rd_buffer).unwrap();
+        count = ((rd_buffer[0] as u16) << 8) | (rd_buffer[1] as u16);
         //panic!("in 0 count");
         nzeros += 1;
     }
@@ -381,14 +384,14 @@ fn mpu6050_test_panic<T: twim::Instance>(twim: &mut twim::Twim<T>, address: u8, 
 }
 
 
-fn mpu6050_read_latest<T: twim::Instance>(twim: &mut twim::Twim<T>, address: u8) -> [u8; dmp_firmware::DMP_PACKET_SIZE] {
+async fn mpu6050_read_latest<T: twim::Instance>(twim: &mut twim::Twim<'_, T>, address: u8) -> [u8; dmp_firmware::DMP_PACKET_SIZE] {
     mpu6050_reset_fifo(twim, address);
 
-    let mut count = mpu6050_get_fifo_count(twim, address);
+    let mut count = mpu6050_get_fifo_count(twim, address).await;
     while count < 28 {
-        count = mpu6050_get_fifo_count(twim, address);
+        count = mpu6050_get_fifo_count(twim, address).await;
     }
     let mut fifo = [0; dmp_firmware::DMP_PACKET_SIZE];
-    twim.blocking_write_read(address, &[116], &mut fifo).unwrap();
+    twim.write_read(address, &[116], &mut fifo).await.unwrap();
     fifo
 }
