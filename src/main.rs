@@ -99,7 +99,19 @@ async fn main(spawner: Spawner) {
     mpu6050_setup(&mut twim0, 0x68);
     mpu6050_setup(&mut twim0, 0x69);
 
-    mpu6050_test_panic(&mut twim0, 0x68, false);
+    tx_uart.blocking_write(b"Starting loop on 0x68:\r\n").unwrap();
+    loop {
+        let mut numtoa_scratch = [0; 30];
+        let fifo = mpu6050_read_latest(&mut twim0, 0x68);
+        tx_uart.blocking_write(b"FIFO contents:").unwrap();
+        for i in 0..fifo.len() {
+            tx_uart.blocking_write(fifo[i].numtoa(10, &mut numtoa_scratch)).unwrap();
+            tx_uart.blocking_write(b",").unwrap();
+        }
+        tx_uart.blocking_write(b"\r\n").unwrap();
+
+        Delay.delay_ms(700u16);
+    }
 
     let button = Input::new(p.P0_29.degrade(), Pull::Up);
     BUTTON_SIGNAL.reset();
@@ -268,36 +280,50 @@ fn mpu6050_setup<T: twim::Instance>(twim: &mut twim::Twim<T>, address: u8) {
 }
 
 fn mpu6050_write_firmware<T: twim::Instance>(twim: &mut twim::Twim<T>, address: u8, verify: bool) {
-    // Logic currently wrong!  Need to manually update the bank it turns out
+    let nbanks = dmp_firmware::DMP_FIRMWARE.len() / dmp_firmware::MPU6050_DMP_MEMORY_BANK_SIZE + 
+        if dmp_firmware::DMP_FIRMWARE.len() % dmp_firmware::MPU6050_DMP_MEMORY_BANK_SIZE == 0 {0} else {1};
 
+    for b in 0..nbanks {
+        let bank_size = if b == (nbanks - 1) {
+            // last block
+            dmp_firmware::DMP_FIRMWARE.len() - (nbanks-1) * dmp_firmware::MPU6050_DMP_MEMORY_BANK_SIZE
+        } else {
+            dmp_firmware::MPU6050_DMP_MEMORY_BANK_SIZE
+        };
 
-    // set the bank to 0
-    twim.blocking_write(address, &[dmp_firmware::MPU6050_REGADDR_BANK_SEL, 0]).unwrap();
-    // and the start address
-    twim.blocking_write(address, &[dmp_firmware::MPU6050_REGADDR_MEM_START_ADDR, 0]).unwrap();
+        // set the bank
+        twim.blocking_write(address, &[dmp_firmware::MPU6050_REGADDR_BANK_SEL, b as u8]).unwrap();
 
-    let mut i = 0;
-    let mut write_buffer = [dmp_firmware::MPU6050_REGADDR_MEM_R_W; dmp_firmware::MPU6050_DMP_MEMORY_CHUNK_SIZE+1];
-    while i < dmp_firmware::DMP_FIRMWARE.len() {
-        let mut chunk_size = dmp_firmware::MPU6050_DMP_MEMORY_CHUNK_SIZE;
+        // now write the bank one chunk at a time
+        for i in (0..bank_size).step_by(dmp_firmware::MPU6050_DMP_MEMORY_CHUNK_SIZE) {
+            let chunk_size = if (i + dmp_firmware::MPU6050_DMP_MEMORY_CHUNK_SIZE) > bank_size {
+                    bank_size - i
+                } else {
+                    dmp_firmware::MPU6050_DMP_MEMORY_CHUNK_SIZE
+                };
+            let mut write_buffer = [dmp_firmware::MPU6050_REGADDR_MEM_R_W; dmp_firmware::MPU6050_DMP_MEMORY_CHUNK_SIZE+1];
+            for j in 0..chunk_size {
+                write_buffer[j + 1] = dmp_firmware::DMP_FIRMWARE[i + j + b*dmp_firmware::MPU6050_DMP_MEMORY_BANK_SIZE];
+            }
+            // set the start address then write
+            twim.blocking_write(address, &[dmp_firmware::MPU6050_REGADDR_MEM_START_ADDR, i as u8]).unwrap();
+            twim.blocking_write(address, &write_buffer[0..(chunk_size+1)]).unwrap();
+        }
 
-        // write the last chunk without extra bytes
-        if (i + chunk_size) > dmp_firmware::DMP_FIRMWARE.len() { chunk_size = dmp_firmware::DMP_FIRMWARE.len() - i; }
-
-        for j in 0..chunk_size { write_buffer[j+1] = dmp_firmware::DMP_FIRMWARE[i+j]; }
-        twim.blocking_write(address, &write_buffer[0..(chunk_size+1)]).unwrap();
-        
-        i += chunk_size;
     }
 
     if verify {
-        //reset to bank and start address of 0 
-        twim.blocking_write(address, &[dmp_firmware::MPU6050_REGADDR_BANK_SEL, 0]).unwrap();
-        twim.blocking_write(address, &[dmp_firmware::MPU6050_REGADDR_MEM_START_ADDR, 0]).unwrap();
-        
         let mut verify_buffer = [0; dmp_firmware::MPU6050_DMP_MEMORY_CHUNK_SIZE];
-        i = 0;
+        let mut i = 0;
+        let mut last_bank = 255;
         while i < dmp_firmware::DMP_FIRMWARE.len() {
+            let bank = (i / dmp_firmware::MPU6050_DMP_MEMORY_BANK_SIZE) as u8;
+            if bank != last_bank {
+                //set to new bank 
+                twim.blocking_write(address, &[dmp_firmware::MPU6050_REGADDR_BANK_SEL, bank]).unwrap();
+            }
+
+            twim.blocking_write(address, &[dmp_firmware::MPU6050_REGADDR_MEM_START_ADDR, (i % dmp_firmware::MPU6050_DMP_MEMORY_BANK_SIZE) as u8]).unwrap();
             twim.blocking_write_read(address, &[dmp_firmware::MPU6050_REGADDR_MEM_R_W],  
                                     &mut verify_buffer).unwrap();
 
@@ -309,7 +335,7 @@ fn mpu6050_write_firmware<T: twim::Instance>(twim: &mut twim::Twim<T>, address: 
                 }
             }
             i += verify_buffer.len();
-
+            last_bank = bank;
         }
     }
 }
@@ -344,9 +370,25 @@ fn mpu6050_test_panic<T: twim::Instance>(twim: &mut twim::Twim<T>, address: u8, 
         nzeros += 1;
     }
 
-    panic!("reached non-zero count {}, after {} zeros", count, nzeros);
-    
-    //end test
+    if count >= 5 {
+        let mut fifo = [0; 5];
+        twim.blocking_write_read(address, &[116], &mut fifo).unwrap();
+        panic!("reached non-zero count {}, after {} zeros. First 5: {},{},{},{},{}", count, nzeros, fifo[0], fifo[1], fifo[2], fifo[3], fifo[4]);
+    } else {
+        panic!("reached non-zero count {}, after {} zeros", count, nzeros);
+
+    }
 }
 
 
+fn mpu6050_read_latest<T: twim::Instance>(twim: &mut twim::Twim<T>, address: u8) -> [u8; dmp_firmware::DMP_PACKET_SIZE] {
+    mpu6050_reset_fifo(twim, address);
+
+    let mut count = mpu6050_get_fifo_count(twim, address);
+    while count < 28 {
+        count = mpu6050_get_fifo_count(twim, address);
+    }
+    let mut fifo = [0; dmp_firmware::DMP_PACKET_SIZE];
+    twim.blocking_write_read(address, &[116], &mut fifo).unwrap();
+    fifo
+}
