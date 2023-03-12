@@ -99,20 +99,6 @@ async fn main(spawner: Spawner) {
     mpu6050_setup(&mut twim0, 0x68);
     mpu6050_setup(&mut twim0, 0x69);
 
-    tx_uart.blocking_write(b"Starting loop on 0x68:\r\n").unwrap();
-    loop {
-        let mut numtoa_scratch = [0; 30];
-        let fifo = mpu6050_read_latest(&mut twim0, 0x68).await;
-        tx_uart.blocking_write(b"FIFO contents:").unwrap();
-        for i in 0..fifo.len() {
-            tx_uart.blocking_write(fifo[i].numtoa(10, &mut numtoa_scratch)).unwrap();
-            tx_uart.blocking_write(b",").unwrap();
-        }
-        tx_uart.blocking_write(b"\r\n").unwrap();
-
-        Delay.delay_ms(700u16);
-    }
-
     let button = Input::new(p.P0_29.degrade(), Pull::Up);
     BUTTON_SIGNAL.reset();
     spawner.spawn(button_task(button)).unwrap();
@@ -136,15 +122,19 @@ async fn main(spawner: Spawner) {
             set_dotstar_color(255, 200, 0, 5, &mut dotstar_dat, &mut dotstar_clk); 
 
             let mut numtoa_buffer = [0u8; 40];
-            let mut flash_data = [0u8; 4];
+            let mut ndata_buffer = [0u8; 4];
+            let mut data_buffer = [0u8; 8];
 
-            qspi.blocking_read(0, &mut flash_data).unwrap();
-            let ndata = u32::from_ne_bytes(flash_data);
+            qspi.blocking_read(0, &mut ndata_buffer).unwrap();
+            let ndata = u32::from_ne_bytes(ndata_buffer);
 
-            for i in 0..ndata {
-                qspi.read(i*4 + FLASH_PAGE_SIZE as u32, &mut flash_data).await.unwrap();
-                let towrite_bytes = u32::from_ne_bytes(flash_data).numtoa(10, &mut numtoa_buffer);
-                tx_uart.blocking_write(towrite_bytes).unwrap();
+            for i in (0..ndata).step_by(8) {
+                qspi.read(i + FLASH_PAGE_SIZE as u32, &mut data_buffer).await.unwrap();
+                for j in 0..4 {
+                    let towrite_bytes = u16::from_be_bytes([data_buffer[2*j], data_buffer[2*j+1]]).numtoa(10, &mut numtoa_buffer);
+                    tx_uart.blocking_write(towrite_bytes).unwrap();
+                    if j < 3 { tx_uart.blocking_write(b",").unwrap(); }
+                }
                 tx_uart.blocking_write(b"\r\n").unwrap();
             }
 
@@ -172,21 +162,63 @@ async fn main(spawner: Spawner) {
             }
             tx_uart.blocking_write(b"Flash erased!\r\n").unwrap();
             
-            set_dotstar_color(255, 0, 255, 5, &mut dotstar_dat, &mut dotstar_clk); 
-            // erase finished, set up recording
-            // TODO
+            // erase finished, recording data
+            
 
-            // start recording
-            // TODO
-            let ndata = 234u32;
+
+            //TODO: recording loop
+            set_dotstar_color(0, 0, 255, 5, &mut dotstar_dat, &mut dotstar_clk); 
+            BUTTON_SIGNAL.reset();
+
+            let mut pagenum: u32 = 1;
+            let mut data_to_flash = [0; FLASH_PAGE_SIZE];  // important assumption: page size/8/2 is even!
+            let mut bytes_in_page = 0;
+            
+            tx_uart.blocking_write(b"Starting data loop!\r\n").unwrap();
+            loop {
+                let data1 = mpu6050_read_latest(&mut twim0, 0x68).await;
+                let data2 = mpu6050_read_latest(&mut twim0, 0x69).await;
+
+                for data in [data1, data2] {
+                    // extract just the quaternion components
+                    for i in 0..4 {
+                        data_to_flash[bytes_in_page] = data[i*4];
+                        data_to_flash[bytes_in_page + 1] = data[i*4+1];
+                        bytes_in_page += 2;
+                    }
+                }
+                if bytes_in_page >= FLASH_PAGE_SIZE {
+                    set_dotstar_color(255, 0, 255, 5, &mut dotstar_dat, &mut dotstar_clk); 
+                    qspi.write(pagenum*FLASH_PAGE_SIZE as u32, &mut data_to_flash).await.unwrap();
+                    set_dotstar_color(0, 0, 255, 5, &mut dotstar_dat, &mut dotstar_clk); 
+                    pagenum += 1;
+                    bytes_in_page = 0;
+                }
+
+                Timer::after(Duration::from_millis(10)).await;
+                if BUTTON_SIGNAL.signaled() { break; }
+            }
+
+            // take care of the last page if we didn't end on a page boundary
+            if bytes_in_page != 0 {
+                for i in bytes_in_page..data_to_flash.len() {
+                    data_to_flash[i] = 0;
+                }
+
+                set_dotstar_color(255, 0, 255, 5, &mut dotstar_dat, &mut dotstar_clk); 
+                qspi.write(pagenum*FLASH_PAGE_SIZE as u32, &mut data_to_flash).await.unwrap();
+                set_dotstar_color(0, 0, 255, 5, &mut dotstar_dat, &mut dotstar_clk); 
+            }
+
+
 
             // record length
+            let ndata = (pagenum as usize - 1)*FLASH_PAGE_SIZE+ bytes_in_page;
             let lenbuf: [u8; 4] = ndata.to_ne_bytes();  // note this is a count of *bytes* not bits
             qspi.blocking_write(0, &lenbuf).unwrap(); // first page is always dedicated to just the length
 
-            set_dotstar_color(0, 0, 255, 5, &mut dotstar_dat, &mut dotstar_clk); 
-
-            BUTTON_SIGNAL.reset(); // serves to ignore any presses during the operation
+            tx_uart.blocking_write(b"Completed data recording!\r\n").unwrap();
+            BUTTON_SIGNAL.reset(); // serves to ignore any presses during the above operation
         }
         Timer::at(Instant::from_ticks(0)).await;
     }
@@ -214,6 +246,8 @@ async fn read_dump(mut rx: uarte::UarteRx<'static, peripherals::UARTE0>) {
         rx.read(&mut buf).await.unwrap();
         if buf[0] == b'd' {
             DUMP_SIGNAL.signal(1);
+        } else if buf[0] == b's' {
+            BUTTON_SIGNAL.signal(1);
         }
     }
 }
