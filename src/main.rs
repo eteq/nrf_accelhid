@@ -131,7 +131,7 @@ async fn main(spawner: Spawner) {
             for i in (0..ndata).step_by(8) {
                 qspi.read(i + FLASH_PAGE_SIZE as u32, &mut data_buffer).await.unwrap();
                 for j in 0..4 {
-                    let towrite_bytes = u16::from_be_bytes([data_buffer[2*j], data_buffer[2*j+1]]).numtoa(10, &mut numtoa_buffer);
+                    let towrite_bytes = i16::from_be_bytes([data_buffer[2*j], data_buffer[2*j+1]]).numtoa(10, &mut numtoa_buffer);
                     tx_uart.blocking_write(towrite_bytes).unwrap();
                     if j < 3 { tx_uart.blocking_write(b",").unwrap(); }
                 }
