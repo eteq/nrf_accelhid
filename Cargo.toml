@@ -21,3 +21,12 @@ embassy-sync = { version = "0.1.0", path = "../embassy/embassy-sync", features =
 embassy-nrf = { path = "../embassy/embassy-nrf", features = ["nrf52840", "time-driver-rtc1", "gpiote", "nightly", "unstable-pac", "time"] }
 
 numtoa = "0.2.4"
+
+
+[[bin]]
+name = "flash-logger"
+path = "src/flash-logger.rs"
+
+[[bin]]
+name = "usb-outputter"
+path = "src/usb-outputter.rs"
