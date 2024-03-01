@@ -7,6 +7,10 @@
 
 use cortex_m::prelude::_embedded_hal_blocking_delay_DelayMs;
 use embassy_executor::Spawner;
+use embassy_nrf::interrupt::QSPI;
+use embassy_nrf::pac::UART0;
+use embassy_nrf::qspi::Qspi;
+use embassy_nrf::uarte::{UarteTx, UarteRx};
 use embassy_time::{Timer, Delay, Instant, Duration};
 
 use embassy_sync::signal::Signal;
@@ -65,7 +69,7 @@ async fn main(spawner: Spawner) {
     } else {
         uart.write(b"No panic error message on boot.\r\n").await.unwrap();
     }
-    let (mut tx_uart, rx_uart) = uart.split();
+    let (tx_uart, rx_uart) = uart.split();
 
     let mut dotstar_dat = Output::new(p.P0_08.degrade(), Level::Low, OutputDrive::Standard);
     let mut dotstar_clk = Output::new(p.P1_09.degrade(), Level::Low, OutputDrive::Standard);
@@ -95,7 +99,7 @@ async fn main(spawner: Spawner) {
 
     let mut twim_config = twim::Config::default();
     twim_config.frequency = twim::Frequency::K400;
-    let mut twim0 = twim::Twim::new(p.TWISPI0, Irqs, p.P0_16, p.P0_14, twim_config);
+    let mut twim0: twim::Twim<'_, peripherals::TWISPI0> = twim::Twim::new(p.TWISPI0, Irqs, p.P0_16, p.P0_14, twim_config);
     mpu6050_setup(&mut twim0, 0x68);
     mpu6050_setup(&mut twim0, 0x69);
 
@@ -109,6 +113,49 @@ async fn main(spawner: Spawner) {
     redled.set_low();
 
     
+    reporting_loop(dotstar_dat, dotstar_clk, tx_uart, qspi, twim0).await;
+    //recording_loop(dotstar_dat, dotstar_clk, tx_uart, qspi, twim0).await;
+    
+}
+
+async fn reporting_loop(mut dotstar_dat: Output<'static, AnyPin>, 
+                        mut dotstar_clk: Output<'static, AnyPin>, 
+                        mut tx_uart: UarteTx<'static, peripherals::UARTE0>, 
+                        mut _qspi: Qspi<'static, peripherals::QSPI>, 
+                        mut twim0: twim::Twim<'static, peripherals::TWISPI0>) {
+    // Goal interface: 
+    // * dotstar starts off, redled on until init finishes
+    // * blue when recording, flash green when writing to uart
+    
+    loop {
+        //recording loop
+        set_dotstar_color(0, 0, 255, 5, &mut dotstar_dat, &mut dotstar_clk);
+        
+        let data1 = mpu6050_read_latest(&mut twim0, 0x68).await;
+        let data2 = mpu6050_read_latest(&mut twim0, 0x69).await;
+        
+        set_dotstar_color(0, 255, 0, 5, &mut dotstar_dat, &mut dotstar_clk);
+
+        let mut data_bytes = [0u8; 2*4*2];
+        let mut j = 0usize;
+        for data in [data1, data2] {
+            // extract just the quaternion components
+            for i in 0..4 {
+                data_bytes[i*2 + j*8] = data[i*2];
+                data_bytes[i*2 + 1 + j*8] = data[i*2 + 1];
+            }
+            j += 1;
+        }
+        tx_uart.blocking_write(&data_bytes).expect("writing failed, cannot continue!");
+        tx_uart.blocking_write(b"\r\n").expect("writing failed, cannot continue!");
+    }
+}
+
+async fn recording_loop(mut dotstar_dat: Output<'static, AnyPin>, 
+                        mut dotstar_clk: Output<'static, AnyPin>, 
+                        mut tx_uart: UarteTx<'static, peripherals::UARTE0>, 
+                        mut qspi: Qspi<'static, peripherals::QSPI>, 
+                        mut twim0: twim::Twim<'static, peripherals::TWISPI0>) {
     // Goal interface: 
     // * dotstar starts off, redled on until init finishes
     // * dotstar green while waiting for input
@@ -222,7 +269,6 @@ async fn main(spawner: Spawner) {
         }
         Timer::at(Instant::from_ticks(0)).await;
     }
-    
 }
 
 

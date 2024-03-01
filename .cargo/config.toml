@@ -3,3 +3,11 @@ target = "thumbv7em-none-eabihf"
 
 [env]
 DEFMT_LOG = "trace"
+
+[profile.release]
+lto = true
+opt-level = "s"
+incremental = false
+codegen-units = 1
+# note: debug = true is okay - debuginfo isn't flashed to the device!
+debug = true
